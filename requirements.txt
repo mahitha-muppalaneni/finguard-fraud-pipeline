@@ -1,0 +1,6 @@
+# FinGuard — Local dependencies (data generation only)
+# PySpark and Delta Lake run inside Databricks — no local install needed.
+
+faker==24.0.0
+pandas==2.2.0
+numpy==1.26.4
