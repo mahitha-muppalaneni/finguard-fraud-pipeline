@@ -1,0 +1,5 @@
+bundle:
+  name: finguard-fraud-pipeline
+
+workspace:
+  host: https://dbc-dc1f9bab-27d0.cloud.databricks.com

@@ -1,0 +1,50 @@
+resources:
+  jobs:
+    finguard_pipeline_workflow:
+      name: finguard_pipeline_workflow
+      tasks:
+        - task_key: bronze_ingestion
+          disabled: false
+          email_notifications: {}
+          environment_key: Default
+          notebook_task:
+            notebook_path: ../src/01_bronze_ingestion.ipynb
+            source: WORKSPACE
+          run_if: ALL_SUCCESS
+          timeout_seconds: 0
+          webhook_notifications: {}
+        - task_key: silver_transformation
+          depends_on:
+            - task_key: bronze_ingestion
+          disabled: false
+          email_notifications: {}
+          environment_key: Default
+          notebook_task:
+            notebook_path: ../src/02_silver_transformation.ipynb
+            source: WORKSPACE
+          run_if: ALL_SUCCESS
+          timeout_seconds: 0
+          webhook_notifications: {}
+        - task_key: gold_feature_engineering
+          depends_on:
+            - task_key: silver_transformation
+          disabled: false
+          email_notifications: {}
+          environment_key: Default
+          notebook_task:
+            notebook_path: ../src/03_gold_feature_engineering.ipynb
+            source: WORKSPACE
+          run_if: ALL_SUCCESS
+          timeout_seconds: 0
+      email_notifications:
+        no_alert_for_skipped_runs: false
+      environments:
+        - environment_key: Default
+          spec:
+            environment_version: "5"
+      max_concurrent_runs: 1
+      performance_target: PERFORMANCE_OPTIMIZED
+      queue:
+        enabled: true
+      timeout_seconds: 0
+      webhook_notifications: {}
