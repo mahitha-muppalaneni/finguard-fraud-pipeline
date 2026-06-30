@@ -20,13 +20,13 @@
 
 ## 📋 Overview
 
-FinGuard is a real-world financial data engineering pipeline that ingests, transforms, and feature-engineers **500,000 synthetic Australian banking transactions** to support fraud detection at scale.
+FinGuard is a financial data engineering pipeline that ingests, transforms, and feature-engineers **500,000 synthetic Australian banking transactions** to support fraud detection at scale.
 
-The pipeline is built using the **Medallion Architecture** (Bronze → Silver → Gold) on Databricks with Delta Lake as the storage layer and Unity Catalog for governance — the same stack used by Australian banks on their cloud data platforms.
+The pipeline is built using the **Medallion Architecture** (Bronze → Silver → Gold) on Databricks with Delta Lake as the storage layer and Unity Catalog for governance — the same stack used by Australian banks on their cloud data platforms. It runs end to end as a scheduled Databricks Workflow, deployed declaratively with Databricks Asset Bundles.
 
 ### Why This Project?
 
-Australian banks process over **$1 trillion in card transactions annually** (RBA Payments Data). Fraud detection pipelines at CBA, NAB, Westpac, and ANZ rely on exactly the patterns demonstrated here: scalable ingestion, enriched feature tables, and low-latency risk scoring using Delta Lake and Spark.
+Australian banks process over **$1 trillion in card transactions annually** (RBA Payments Data). Fraud detection pipelines at CBA, NAB, Westpac, and ANZ rely on exactly the patterns demonstrated here: scalable incremental ingestion, enriched feature tables, and risk scoring using Delta Lake and Spark.
 
 ---
 
@@ -51,12 +51,11 @@ Australian banks process over **$1 trillion in card transactions annually** (RBA
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║                    🥉  BRONZE LAYER  (finguard.bronze.*)                 ║
 ║                                                                          ║
-║  • Explicit StructType schema enforcement                                ║
-║  • PERMISSIVE ingestion with dead-letter quarantine                      ║
+║  • Explicit StructType schema enforcement (no inferSchema)               ║
+║  • PERMISSIVE ingestion with row-level data quality checks               ║
 ║  • Audit columns: _ingested_at, _batch_id, _source_file                  ║
-║  • Partitioned by txn_month for query pruning                            ║
+║  • Partitioned by partition_date for query pruning                       ║
 ║  • OPTIMIZE + ZORDER BY (customer_id, txn_date)                          ║
-║  • Data quality checks (APRA CPS 234 aligned)                            ║
 ╚══════════════════════════════════════════════════════════════════════════╝
                                │
                                ▼
@@ -64,10 +63,9 @@ Australian banks process over **$1 trillion in card transactions annually** (RBA
 ║                    🥈  SILVER LAYER  (finguard.silver.*)                 ║
 ║                                                                          ║
 ║  • Type casting & data standardisation                                   ║
-║  • Deduplication (transaction_id idempotency)                            ║
+║  • Deduplication (transaction_id idempotency, window-based)              ║
 ║  • Broadcast joins: transactions ↔ customers ↔ merchants                 ║
-║  • Window functions: rolling 7/30-day spend averages                     ║
-║  • SCD Type 2 for customer dimension                                     ║
+║  • Window functions: rolling 7/30-day spend, velocity, sequencing        ║
 ║  • Bad row quarantine to finguard.monitoring.dead_letter                 ║
 ╚══════════════════════════════════════════════════════════════════════════╝
                                │
@@ -75,11 +73,19 @@ Australian banks process over **$1 trillion in card transactions annually** (RBA
 ╔══════════════════════════════════════════════════════════════════════════╗
 ║                    🥇  GOLD LAYER  (finguard.gold.*)                     ║
 ║                                                                          ║
-║  • Fraud feature engineering (AUSTRAC typology aligned)                  ║
-║  • Customer risk scoring with rolling velocity features                  ║
-║  • Delta MERGE (upserts) for incremental processing                      ║
-║  • ML-ready feature table for model training                             ║
-║  • Per-merchant risk profiles                                            ║
+║  • 10-signal fraud scorecard (AUSTRAC typology aligned)                  ║
+║  • Composite risk_score (0–10) and risk_band                             ║
+║  • Customer risk scores via Delta MERGE (incremental upsert)             ║
+║  • ML-ready feature store — 35 features, no PII, binary label            ║
+╚══════════════════════════════════════════════════════════════════════════╝
+                               │
+                               ▼
+╔══════════════════════════════════════════════════════════════════════════╗
+║                    ⚙️  ORCHESTRATION  (Databricks Workflow)              ║
+║                                                                          ║
+║  • Bronze → Silver → Gold, scheduled daily on Serverless compute         ║
+║  • Watermark-based incremental processing                                ║
+║  • Deployed declaratively via Databricks Asset Bundles                   ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
 
@@ -129,17 +135,19 @@ finguard/                          ← Catalog
 │       ├── customers.csv
 │       └── merchants.csv
 ├── bronze/                        ← Schema
-│   ├── transactions               ← Delta table (partitioned by txn_month)
+│   ├── transactions               ← Delta table (partitioned by partition_date)
 │   ├── customers                  ← Delta table (partitioned by address_state)
 │   └── merchants                  ← Delta table
 ├── silver/                        ← Schema
 │   ├── transactions_cleaned       ← Delta table
-│   └── transactions_enriched      ← Delta table (joined with customers + merchants)
+│   ├── transactions_enriched      ← Delta table (joined with customers + merchants)
+│   └── customers                  ← Delta table
 ├── gold/                          ← Schema
-│   ├── fraud_features             ← Delta table (ML-ready)
-│   └── customer_risk_scores       ← Delta table (upserted via MERGE)
+│   ├── fraud_features             ← Delta table (per-transaction risk scoring)
+│   ├── customer_risk_scores       ← Delta table (upserted via MERGE)
+│   └── ml_feature_store           ← Delta table (ML-ready, no PII)
 └── monitoring/                    ← Schema
-    ├── dq_results                 ← Data quality metrics over time
+    ├── pipeline_control           ← Watermark table
     └── dead_letter                ← Quarantined bad rows
 ```
 
@@ -147,11 +155,12 @@ finguard/                          ← Catalog
 
 ## 📓 Notebooks
 
-| Notebook | Layer | Status | Key PySpark Concepts |
-|----------|-------|--------|---------------------|
-| `01_bronze_ingestion.ipynb` | Bronze | ✅ Complete | StructType schemas, Delta writes, partitioning, OPTIMIZE, ZORDER, time travel, DQ checks, AQE |
-| `02_silver_transformation.ipynb` | Silver | 🔄 In Progress | Joins, window functions, deduplication, SCD Type 2, dead-letter tables |
-| `03_gold_feature_engineering.ipynb` | Gold | 🔄 In Progress | Fraud features, UDFs, Delta MERGE, ML feature table |
+| Notebook | Layer | Key PySpark Concepts |
+|---|---|---|
+| `00_environment_setup.ipynb` | Setup | Catalog/schema creation, watermark table seeding (run once, manual) |
+| `01_bronze_ingestion.ipynb` | Bronze | StructType schemas, Delta writes, partitioning, OPTIMIZE, ZORDER, data quality checks |
+| `02_silver_transformation.ipynb` | Silver | Broadcast joins, window functions, deduplication, dead-letter handling |
+| `03_gold_feature_engineering.ipynb` | Gold | Fraud scorecard logic, Delta MERGE, ML feature store |
 
 ---
 
@@ -160,19 +169,22 @@ finguard/                          ← Catalog
 | Component | Technology | Purpose |
 |-----------|-----------|---------|
 | Processing Engine | Apache Spark 3.5 (PySpark) | Distributed data processing |
-| Platform | Databricks Runtime 14.3 LTS | Managed Spark + Delta |
+| Platform | Databricks Runtime 14.3 LTS, Serverless compute | Managed Spark + Delta |
 | Storage Format | Delta Lake 3.0 | ACID tables with time travel |
-| Data Governance | Unity Catalog | 3-level namespace, access control |
+| Data Governance | Unity Catalog | 3-level namespace, managed volumes |
+| Orchestration | Databricks Workflows | Scheduled, dependency-based job execution |
+| Deployment | Databricks Asset Bundles | Declarative, version-controlled job deployment |
 | Language | Python 3.10 | PEP 8 compliant throughout |
-| Version Control | Git + Databricks Repos | CI/CD-ready notebook versioning |
+| Version Control | Git + Databricks Repos | Notebooks synced directly to GitHub |
 
 ---
 
 ## 🚀 Quickstart
 
 ### Prerequisites
-- [Databricks Free Edition](https://community.cloud.databricks.com) account
+- A Databricks workspace with Unity Catalog enabled (Free Edition supported)
 - Python 3.8+ with pip
+- [Databricks CLI](https://docs.databricks.com/en/dev-tools/cli/install.html) (for Asset Bundle deployment)
 
 ### 1. Clone the repo
 ```bash
@@ -186,49 +198,34 @@ pip install -r data_generator/requirements.txt
 python data_generator/generate_data.py
 ```
 
-Output:
-```
-❶  Generating customers...
-    ✓  data/raw/customers/customers.csv  (1.2 MB  |  5,000 rows)
-❷  Generating merchants...
-    ✓  data/raw/merchants/merchants.csv  (120 KB  |  800 rows)
-❸  Generating transactions...
-    ... 100,000 / 500,000  (20%)
-    ... 200,000 / 500,000  (40%)
-    ...
-    ✓  data/raw/transactions/transactions.csv  (118.4 MB  |  500,000 rows)
-    ✓  Fraud rate: 3.87%
-```
+### 3. Upload CSVs to Unity Catalog
 
-### 3. Create Unity Catalog structure in Databricks
+Run `notebooks/setup/00_environment_setup.ipynb` first — it creates the catalog, schemas, and volume. Then upload the three CSVs via **Catalog → finguard → raw → source_files**, or via CLI:
 
-```sql
--- Run in a Databricks notebook
-CREATE CATALOG IF NOT EXISTS finguard;
-CREATE SCHEMA IF NOT EXISTS finguard.raw;
-CREATE VOLUME IF NOT EXISTS finguard.raw.source_files;
-```
-
-### 4. Upload CSVs to the Volume
-
-Via Databricks UI: **Catalog → finguard → raw → source_files → Upload**
-
-Or via CLI:
 ```bash
-pip install databricks-cli
-databricks configure --token
-databricks fs cp data/raw/transactions/transactions.csv /Volumes/finguard/raw/source_files/
-databricks fs cp data/raw/customers/customers.csv      /Volumes/finguard/raw/source_files/
-databricks fs cp data/raw/merchants/merchants.csv      /Volumes/finguard/raw/source_files/
+databricks auth login --host <your-workspace-url>
+databricks fs cp data/raw/transactions/transactions.csv dbfs:/Volumes/finguard/raw/source_files/
+databricks fs cp data/raw/customers/customers.csv      dbfs:/Volumes/finguard/raw/source_files/
+databricks fs cp data/raw/merchants/merchants.csv      dbfs:/Volumes/finguard/raw/source_files/
 ```
 
-### 5. Run notebooks in order
+### 4. Run the pipeline notebooks, in order, on Serverless compute
 
 ```
-notebooks/01_bronze_ingestion.ipynb
-notebooks/02_silver_transformation.ipynb    ← coming soon
-notebooks/03_gold_feature_engineering.ipynb ← coming soon
+notebooks/setup/00_environment_setup.ipynb     ← run once
+notebooks/pipeline/01_bronze_ingestion.ipynb
+notebooks/pipeline/02_silver_transformation.ipynb
+notebooks/pipeline/03_gold_feature_engineering.ipynb
 ```
+
+### 5. Deploy as a scheduled Workflow
+
+```bash
+databricks bundle validate
+databricks bundle deploy
+```
+
+Full setup walkthrough: [`docs/databricks_setup_guide.md`](docs/databricks_setup_guide.md)
 
 ---
 
@@ -247,16 +244,14 @@ notebooks/03_gold_feature_engineering.ipynb ← coming soon
 <summary><strong>Schema & Types</strong></summary>
 
 - Explicit `StructType` / `StructField` definitions
-- Why `inferSchema=False` in production
-- Type casting in Silver layer
-- Schema evolution with `autoMerge`
+- Why `inferSchema=False` matters in production
+- Type casting and standardisation in the Silver layer
 </details>
 
 <details>
 <summary><strong>Joins & Performance</strong></summary>
 
 - Broadcast joins for small lookup tables (`F.broadcast()`)
-- Sort-merge joins for large tables
 - `repartition` vs `coalesce` — when to use each
 - Partition pruning via `partitionBy`
 </details>
@@ -264,21 +259,21 @@ notebooks/03_gold_feature_engineering.ipynb ← coming soon
 <details>
 <summary><strong>Window Functions</strong></summary>
 
-- `Window.partitionBy().orderBy()`
-- `lag()`, `lead()`, `row_number()`, `rank()`
-- Rolling aggregations: 7-day and 30-day spend averages
-- Velocity features: transactions per hour per customer
+- `Window.partitionBy().orderBy()`, `rangeBetween` vs `rowsBetween`
+- `lag()`, `row_number()`
+- Rolling aggregations: 7-day and 30-day spend, transaction counts
+- Velocity features: rapid-succession detection, customer transaction sequencing
 </details>
 
 <details>
 <summary><strong>Delta Lake</strong></summary>
 
 - ACID transactions and the `_delta_log/` transaction log
-- Time travel: `versionAsOf` and `timestampAsOf`
 - `OPTIMIZE` and `ZORDER BY` for query performance
 - `VACUUM` for storage management
 - `MERGE` (upserts) for incremental processing
-- `DESCRIBE HISTORY` for audit trails
+- `DESCRIBE HISTORY` for transaction-level audit trails
+- Watermark-based incremental loads using a control table
 </details>
 
 <details>
@@ -286,9 +281,9 @@ notebooks/03_gold_feature_engineering.ipynb ← coming soon
 
 - Unity Catalog 3-level namespace (`catalog.schema.table`)
 - Managed Volumes for file storage
-- Serverless compute configuration
-- AQE (Adaptive Query Execution)
-- `autoCompact` and `optimizeWrite`
+- Serverless compute
+- Databricks Workflows for multi-task orchestration
+- Databricks Asset Bundles for declarative deployment
 </details>
 
 ---
@@ -303,7 +298,7 @@ This pipeline incorporates data engineering patterns relevant to Australian fina
 | **APRA CPS 234** | Data integrity checks, audit columns, pipeline lineage |
 | **AFCA Fraud Categories** | Fraud pattern taxonomy used in feature engineering |
 | **CDR (Consumer Data Right)** | Schema standards for customer and transaction data |
-| **Privacy Act 1988** | PII handling — no real customer data used |
+| **Privacy Act 1988** | No real customer data used — all records are synthetic |
 
 ---
 
@@ -312,18 +307,23 @@ This pipeline incorporates data engineering patterns relevant to Australian fina
 ```
 finguard-fraud-pipeline/
 │
+├── 🐍 data_generator/
+│   ├── generate_data.py                   # Synthetic AU banking data generator
+│   └── requirements.txt                   # Local Python dependencies
+|
+├── 📄 docs/
+│   └── databricks_setup_guide.md          # Step-by-step Databricks setup
+|
 ├── 📓 notebooks/
+|   ├── 00_environment_setup.ipynb         # catalog, schema, watermark table creation
 │   ├── 01_bronze_ingestion.ipynb          # Raw ingestion → Delta Bronze
 │   ├── 02_silver_transformation.ipynb     # Cleaning, joins, window functions
 │   └── 03_gold_feature_engineering.ipynb  # Fraud features, ML output
 │
-├── 🐍 data_generator/
-│   ├── generate_data.py                   # Synthetic AU banking data generator
-│   └── requirements.txt                   # Local Python dependencies
+├── resources/
+│   └── finguard_pipeline_workflow.job.yml   # Workflow definition (Asset Bundle)
 │
-├── 📄 docs/
-│   └── databricks_setup_guide.md          # Step-by-step Databricks setup
-│
+├── databricks.yml                           # Asset Bundle root config
 ├── .gitignore
 └── README.md
 ```
