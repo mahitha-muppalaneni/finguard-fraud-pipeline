@@ -39,7 +39,7 @@ This notebook is intentionally separate from the daily pipeline notebooks — it
 1. Left sidebar → **Catalog**
 2. Navigate: `finguard` → `raw` → `source_files`
 3. Click **"Upload to this volume"**
-4. Upload these 3 csv files:
+4. Upload the three CSV files
 
 Files will be available at:
 ```
@@ -134,3 +134,4 @@ databricks bundle deploy
 | Notebook shows "Detached" | Top right → Connect → Serverless |
 | GitHub push fails | Confirm the linked token has `repo` scope |
 | `AnalysisException: Table not found` | Run notebooks in order — each layer depends on the one before it |
+| `bundle deploy` variable errors on Windows | Set `$env:BUNDLE_VAR_notification_email = "your@email.com"` in PowerShell, then run `databricks bundle deploy` with no `--var` flag |

@@ -1,5 +1,13 @@
 bundle:
   name: finguard-fraud-pipeline
 
+variables:
+  notification_email:
+    description: "Email address for job failure notifications"
+    default: "your-email@example.com"
+    
 workspace:
   host: https://dbc-dc1f9bab-27d0.cloud.databricks.com
+
+include:
+  - resources/*.yml

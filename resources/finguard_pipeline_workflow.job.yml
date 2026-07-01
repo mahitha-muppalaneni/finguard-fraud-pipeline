@@ -8,7 +8,7 @@ resources:
           email_notifications: {}
           environment_key: Default
           notebook_task:
-            notebook_path: ../src/01_bronze_ingestion.ipynb
+            notebook_path: ../notebooks/01_bronze_ingestion.ipynb
             source: WORKSPACE
           run_if: ALL_SUCCESS
           timeout_seconds: 0
@@ -20,7 +20,7 @@ resources:
           email_notifications: {}
           environment_key: Default
           notebook_task:
-            notebook_path: ../src/02_silver_transformation.ipynb
+            notebook_path: ../notebooks/02_silver_transformation.ipynb
             source: WORKSPACE
           run_if: ALL_SUCCESS
           timeout_seconds: 0
@@ -32,19 +32,29 @@ resources:
           email_notifications: {}
           environment_key: Default
           notebook_task:
-            notebook_path: ../src/03_gold_feature_engineering.ipynb
+            notebook_path: ../notebooks/03_gold_feature_engineering.ipynb
             source: WORKSPACE
           run_if: ALL_SUCCESS
           timeout_seconds: 0
+          webhook_notifications: {}
       email_notifications:
-        no_alert_for_skipped_runs: false
+        no_alert_for_skipped_runs: true
+        on_failure:
+          - ${var.notification_email}
       environments:
         - environment_key: Default
           spec:
             environment_version: "5"
       max_concurrent_runs: 1
+      notification_settings:
+        no_alert_for_canceled_runs: true
+        no_alert_for_skipped_runs: true
       performance_target: PERFORMANCE_OPTIMIZED
       queue:
         enabled: true
+      schedule:
+        pause_status: PAUSED
+        quartz_cron_expression: 14 0 6 * * ?
+        timezone_id: Australia/Sydney
       timeout_seconds: 0
       webhook_notifications: {}
